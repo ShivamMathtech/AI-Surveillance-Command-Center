@@ -1,0 +1,3 @@
+# Install only when a specific integration needs these engines.
+onnxruntime>=1.20,<2
+torch>=2.6,<3
