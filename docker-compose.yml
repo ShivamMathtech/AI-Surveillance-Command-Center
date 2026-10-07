@@ -1,0 +1,83 @@
+name: surveillance-command-center
+services:
+  init-secrets:
+    image: python:3.12-slim
+    command: ["python", "/init-secrets.py"]
+    volumes:
+      - secrets:/secrets
+      - ./docker/init-secrets.py:/init-secrets.py:ro
+    restart: "no"
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: scc
+      POSTGRES_DB: scc
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - secrets:/run/secrets:ro
+    depends_on:
+      init-secrets:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scc -d scc"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+  backend:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    environment:
+      DATABASE_URL: postgresql
+      REDIS_URL: redis://redis:6379/0
+      SECRET_DIR: /run/secrets
+      DATA_DIR: /data
+      DEMO_MODE: ${DEMO_MODE:-true}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      SESSION_MINUTES: ${SESSION_MINUTES:-30}
+      ALLOWED_RTSP_HOSTS: ${ALLOWED_RTSP_HOSTS:-}
+      VIDEO_ROOT: /media
+    volumes:
+      - secrets:/run/secrets:ro
+      - backend-data:/data
+      - ./media:/media:ro
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+    ports:
+      - "127.0.0.1:8080:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+volumes:
+  postgres-data:
+  backend-data:
+  secrets:
